@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Data.SqlClient;
+using Microsoft.Data.SqlClient;
 using System.Security.Cryptography;
 using System.Text;
 using log4net;
@@ -85,7 +85,7 @@ namespace LandTitleRegistration.Services
                     if (reader.Read())
                     {
                         for (int i = 0; i < reader.FieldCount; i++)
-                            result[reader.GetName(i)] = reader.GetValue(i)?.ToString();
+                            result[reader.GetName(i)] = reader.GetValue(i)?.ToString() ?? string.Empty;
                     }
                 }
             }
@@ -157,7 +157,8 @@ namespace LandTitleRegistration.Services
 
         private string ComputeSha1Hash(string input)                                   // sec-weak-hash
         {
-            using (var sha1 = new SHA1CryptoServiceProvider())                         // sec-weak-hash
+            // Updated to use SHA1.Create() for .NET 8 compatibility
+            using (var sha1 = SHA1.Create())                                           // sec-weak-hash
             {
                 var bytes = sha1.ComputeHash(Encoding.UTF8.GetBytes(input));            // sec-weak-hash
                 var sb = new StringBuilder();

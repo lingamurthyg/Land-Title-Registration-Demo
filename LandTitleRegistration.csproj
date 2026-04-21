@@ -1,51 +1,30 @@
-<?xml version="1.0" encoding="utf-8"?>
-<Project ToolsVersion="14.0" DefaultTargets="Build"
-         xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
-    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
-    <ProductVersion>8.0.30703</ProductVersion>
-    <ProjectGuid>{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}</ProjectGuid>
+    <TargetFramework>net8.0</TargetFramework>
     <OutputType>Library</OutputType>
-    <AppDesignerFolder>Properties</AppDesignerFolder>
     <RootNamespace>LandTitleRegistration</RootNamespace>
     <AssemblyName>LandTitleRegistration</AssemblyName>
-
-    <!-- VIOLATION czr-csharp: Targets .NET Framework 4.6.1 — EOL since April 2022 -->
-    <TargetFrameworkVersion>v4.6.1</TargetFrameworkVersion>
-
-    <FileAlignment>512</FileAlignment>
-    <NuGetPackageImportStamp />
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- VIOLATION CVE-2024-21907: Newtonsoft.Json 12.0.1 — Insecure deserialization
-         Allows attackers to execute arbitrary code via crafted JSON input -->
-    <PackageReference Include="Newtonsoft.Json" Version="12.0.1" />
-
-    <!-- VIOLATION CVE-2018-1285: log4net 2.0.8 — XML external entity (XXE) injection
-         Allows attackers to read arbitrary files and perform SSRF via malicious config -->
-    <PackageReference Include="log4net" Version="2.0.8" />
-
-    <!-- VIOLATION CVE-2023-29337: NuGet.Frameworks 6.0.0 — Path traversal vulnerability -->
-    <PackageReference Include="NuGet.Frameworks" Version="6.0.0" />
-
-    <!-- VIOLATION CVE-2021-26701: System.Text.Encodings.Web 5.0.0
-         ReDoS via specially crafted input in HTML encoder -->
-    <PackageReference Include="System.Text.Encodings.Web" Version="5.0.0" />
-
-    <Reference Include="System" />
-    <Reference Include="System.Data" />
-    <Reference Include="System.Net.Http" />
-    <Reference Include="System.Web" />
-    <Reference Include="Microsoft.CSharp" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Compile Include="Controllers\TitleController.cs" />
-    <Compile Include="Services\TitleService.cs" />
-    <Compile Include="Properties\AssemblyInfo.cs" />
+    <!-- Updated to .NET 8 compatible versions with security fixes -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="log4net" Version="2.0.17" />
+    <PackageReference Include="System.Text.Encodings.Web" Version="8.0.0" />
+    
+    <!-- .NET 8 compatible packages -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.0" />
+    
+    <!-- ASP.NET Core packages for .NET 8 -->
+    <PackageReference Include="Microsoft.AspNetCore.Http.Abstractions" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="8.0.0" />
   </ItemGroup>
 
 </Project>
