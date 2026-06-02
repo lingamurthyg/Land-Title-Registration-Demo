@@ -12,28 +12,42 @@
     <RootNamespace>LandTitleRegistration</RootNamespace>
     <AssemblyName>LandTitleRegistration</AssemblyName>
 
-    <!-- VIOLATION czr-csharp: Targets .NET Framework 4.6.1 — EOL since April 2022 -->
-    <TargetFrameworkVersion>v4.6.1</TargetFrameworkVersion>
+    <!-- Updated to .NET Framework 4.8 for better cloud compatibility -->
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
 
     <FileAlignment>512</FileAlignment>
     <NuGetPackageImportStamp />
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- VIOLATION CVE-2024-21907: Newtonsoft.Json 12.0.1 — Insecure deserialization
-         Allows attackers to execute arbitrary code via crafted JSON input -->
-    <PackageReference Include="Newtonsoft.Json" Version="12.0.1" />
+    <!-- Updated to latest secure version -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
 
-    <!-- VIOLATION CVE-2018-1285: log4net 2.0.8 — XML external entity (XXE) injection
-         Allows attackers to read arbitrary files and perform SSRF via malicious config -->
-    <PackageReference Include="log4net" Version="2.0.8" />
-
-    <!-- VIOLATION CVE-2023-29337: NuGet.Frameworks 6.0.0 — Path traversal vulnerability -->
-    <PackageReference Include="NuGet.Frameworks" Version="6.0.0" />
-
-    <!-- VIOLATION CVE-2021-26701: System.Text.Encodings.Web 5.0.0
-         ReDoS via specially crafted input in HTML encoder -->
-    <PackageReference Include="System.Text.Encodings.Web" Version="5.0.0" />
+    <!-- AWS SDK packages for cloud-native configuration and secrets management -->
+    <PackageReference Include="AWSSDK.SimpleSystemsManagement" Version="3.7.300.0" />
+    <PackageReference Include="AWSSDK.SecretsManager" Version="3.7.300.0" />
+    <PackageReference Include="AWSSDK.ServiceDiscovery" Version="3.7.300.0" />
+    <PackageReference Include="AWS.Logger.Log4net" Version="3.5.0" />
+    
+    <!-- Redis for distributed caching and session state -->
+    <PackageReference Include="StackExchange.Redis" Version="2.7.10" />
+    <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="8.0.0" />
+    
+    <!-- Configuration and DI -->
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.0" />
+    
+    <!-- Updated log4net to latest secure version -->
+    <PackageReference Include="log4net" Version="2.0.15" />
+    
+    <!-- Updated to latest secure versions -->
+    <PackageReference Include="NuGet.Frameworks" Version="6.8.0" />
+    <PackageReference Include="System.Text.Encodings.Web" Version="8.0.0" />
+    
+    <!-- System.Threading.Channels for async producer-consumer patterns -->
+    <PackageReference Include="System.Threading.Channels" Version="8.0.0" />
 
     <Reference Include="System" />
     <Reference Include="System.Data" />
@@ -46,6 +60,12 @@
     <Compile Include="Controllers\TitleController.cs" />
     <Compile Include="Services\TitleService.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

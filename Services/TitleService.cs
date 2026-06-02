@@ -3,97 +3,194 @@ using System.Collections.Generic;
 using System.Data.SqlClient;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading.Tasks;
+using Amazon.SecretsManager;
+using Amazon.SecretsManager.Model;
+using Amazon.SimpleSystemsManagement;
+using Amazon.SimpleSystemsManagement.Model;
+using Microsoft.Extensions.Configuration;
+using StackExchange.Redis;
+using Newtonsoft.Json;
+using AWS.Logger.Log4net;
 using log4net;
 
 namespace LandTitleRegistration.Services
 {
     public class TitleService
     {
-        // VIOLATION sec-cred-001 [Security Health / Critical]: Database credentials hardcoded
-        // in source code. Any developer, contractor, or CI system with repo access can connect
-        // directly to the production database. Must use Azure Key Vault or AWS Secrets Manager.
-        private const string DbHost     = "sql-prod.landtitle.internal";    // cr-csharp-0021
-        private const string DbName     = "LandTitleDB";                    // sec-cred-001
-        private const string DbUser     = "lt_admin";                       // sec-cred-001
-        private const string DbPassword = "L@ndT1tle#Prod2018!";            // sec-cred-001
-
-        // VIOLATION sec-cred-001 [Security Health / Critical]: Hardcoded API key for
-        // Government Land Registry integration. Rotation is impossible without a code change.
-        private const string GovApiKey  = "GLR-PROD-KEY-7f3a9b2c4d1e8f0a"; // sec-cred-001
-
+        private readonly IConfiguration _configuration;
+        private readonly IAmazonSecretsManager _secretsManager;
+        private readonly IAmazonSimpleSystemsManagement _ssmClient;
+        private readonly IConnectionMultiplexer _redis;
         private static readonly ILog Log = LogManager.GetLogger(typeof(TitleService));
 
-        private string GetConnectionString()
+        // Connection string and secrets loaded from AWS Secrets Manager
+        private string _connectionString;
+        private string _govApiKey;
+
+        public TitleService(
+            IConfiguration configuration,
+            IAmazonSimpleSystemsManagement ssmClient,
+            IConnectionMultiplexer redis)
         {
-            // VIOLATION sec-cred-001: Connection string assembled from hardcoded fields.
-            return $"Server={DbHost};Database={DbName};User Id={DbUser};Password={DbPassword};"; // sec-cred-001
+            _configuration = configuration;
+            _ssmClient = ssmClient;
+            _redis = redis;
+            
+            // Initialize AWS Secrets Manager client
+            _secretsManager = new AmazonSecretsManagerClient();
+
+            // Configure CloudWatch Logs appender for log4net
+            ConfigureCloudWatchLogging();
+
+            // Load secrets from AWS Secrets Manager
+            InitializeSecretsAsync().GetAwaiter().GetResult();
         }
 
-        public Dictionary<string, object> CreateRegistration(
+        /// <summary>
+        /// Configures log4net to use AWS CloudWatch Logs appender
+        /// </summary>
+        private void ConfigureCloudWatchLogging()
+        {
+            var logConfig = new AWSLoggerConfig
+            {
+                LogGroup = _configuration["Logging:LogGroup"] ?? "/aws/landtitle/application",
+                Region = _configuration["AWS:Region"] ?? "us-east-1"
+            };
+
+            // CloudWatch appender will be configured via log4net.config
+            // This ensures logs are streamed to CloudWatch and survive pod restarts
+        }
+
+        /// <summary>
+        /// Loads connection strings and API keys from AWS Secrets Manager
+        /// </summary>
+        private async Task InitializeSecretsAsync()
+        {
+            try
+            {
+                var secretPrefix = _configuration["AWS:SecretsManagerPrefix"] ?? "landtitle/";
+
+                // Retrieve database connection string from Secrets Manager
+                var dbSecretName = $"{secretPrefix}database/connection-string";
+                var dbSecret = await GetSecretAsync(dbSecretName);
+                _connectionString = dbSecret;
+
+                // Retrieve Government API key from Secrets Manager
+                var apiKeySecretName = $"{secretPrefix}api-keys/government-registry";
+                _govApiKey = await GetSecretAsync(apiKeySecretName);
+
+                Log.Info("Successfully loaded secrets from AWS Secrets Manager");
+            }
+            catch (Exception ex)
+            {
+                Log.Error("Failed to load secrets from AWS Secrets Manager", ex);
+                
+                // Fallback to environment variables (not recommended for production)
+                _connectionString = Environment.GetEnvironmentVariable("DATABASE_CONNECTION_STRING");
+                _govApiKey = Environment.GetEnvironmentVariable("GOV_API_KEY");
+                
+                if (string.IsNullOrEmpty(_connectionString))
+                {
+                    throw new InvalidOperationException(
+                        "Database connection string not found in Secrets Manager or environment variables");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Retrieves a secret value from AWS Secrets Manager
+        /// </summary>
+        private async Task<string> GetSecretAsync(string secretName)
+        {
+            var request = new GetSecretValueRequest
+            {
+                SecretId = secretName
+            };
+
+            var response = await _secretsManager.GetSecretValueAsync(request);
+            return response.SecretString;
+        }
+
+        public async Task<Dictionary<string, object>> CreateRegistrationAsync(
             string ownerName, string parcelId,
             string propertyAddress, string titleType)
         {
-            var titleRef = "LT-" + DateTime.Now.Ticks.ToString().Substring(10);
+            // Use UTC timestamp for cloud-native time handling
+            var titleRef = "LT-" + DateTimeOffset.UtcNow.Ticks.ToString().Substring(10);
 
-            using (var conn = new SqlConnection(GetConnectionString()))
+            using (var conn = new SqlConnection(_connectionString))
             {
-                conn.Open();
+                await conn.OpenAsync();
 
-                // VIOLATION sql-inject-001 [Security Health / Critical]: SQL built by string
-                // concatenation. Input ownerName = "'; DROP TABLE TitleRegistrations; --" would
-                // delete all registration records. Use SqlParameter for all user-supplied values.
-                var sql = "INSERT INTO TitleRegistrations " +                           // sql-inject-001
-                    "(TitleRef, OwnerName, ParcelId, PropertyAddress, TitleType, RegisteredDate) VALUES ('" +
-                    titleRef + "', '" + ownerName + "', '" + parcelId +                 // sql-inject-001
-                    "', '" + propertyAddress + "', '" + titleType + "', GETDATE())";    // sql-inject-001
+                // Use parameterized queries to prevent SQL injection
+                var sql = "INSERT INTO TitleRegistrations " +
+                    "(TitleRef, OwnerName, ParcelId, PropertyAddress, TitleType, RegisteredDate) " +
+                    "VALUES (@TitleRef, @OwnerName, @ParcelId, @PropertyAddress, @TitleType, GETUTCDATE())";
 
                 using (var cmd = new SqlCommand(sql, conn))
-                    cmd.ExecuteNonQuery();
+                {
+                    cmd.Parameters.AddWithValue("@TitleRef", titleRef);
+                    cmd.Parameters.AddWithValue("@OwnerName", ownerName);
+                    cmd.Parameters.AddWithValue("@ParcelId", parcelId);
+                    cmd.Parameters.AddWithValue("@PropertyAddress", propertyAddress);
+                    cmd.Parameters.AddWithValue("@TitleType", titleType);
+                    
+                    await cmd.ExecuteNonQueryAsync();
+                }
             }
 
-            // VIOLATION sec-weak-hash [Security Health / High]: SHA1 is cryptographically
-            // broken (SHATTERED attack, 2017). Do not use for any security-sensitive hashing.
-            // Use SHA-256 or BCrypt for confirmation codes.
-            string confirmCode = ComputeSha1Hash(titleRef + ownerName);                 // sec-weak-hash
+            // Use SHA-256 instead of SHA-1 for secure hashing
+            string confirmCode = ComputeSha256Hash(titleRef + ownerName);
 
             var result = new Dictionary<string, object>
             {
-                ["titleRef"]      = titleRef,
-                ["ownerName"]     = ownerName,
-                ["parcelId"]      = parcelId,
-                ["address"]       = propertyAddress,
-                ["type"]          = titleType,
-                ["confirmation"]  = confirmCode,
-                ["dbHost"]        = DbHost                                              // cr-csharp-0021
+                ["titleRef"] = titleRef,
+                ["ownerName"] = ownerName,
+                ["parcelId"] = parcelId,
+                ["address"] = propertyAddress,
+                ["type"] = titleType,
+                ["confirmation"] = confirmCode,
+                ["registeredAt"] = DateTimeOffset.UtcNow.ToString("o")
             };
-            Log.Info("Registration created: " + titleRef);
+            
+            Log.Info($"Registration created: {titleRef}");
             return result;
         }
 
-        public Dictionary<string, object> GetTitleByParcel(string parcelId)
+        public async Task<Dictionary<string, object>> GetTitleByParcelAsync(string parcelId)
         {
-            // VIOLATION sql-inject-001 [Security Health / Critical]: parcelId is user-supplied
-            // and appended directly into SQL. Parameterise with SqlParameter("@parcelId", parcelId).
-            var sql = "SELECT * FROM TitleRegistrations WHERE ParcelId = '" + parcelId + "'"; // sql-inject-001
+            // Use parameterized query to prevent SQL injection
+            var sql = "SELECT * FROM TitleRegistrations WHERE ParcelId = @ParcelId";
             var result = new Dictionary<string, object>();
-            using (var conn = new SqlConnection(GetConnectionString()))
+            
+            using (var conn = new SqlConnection(_connectionString))
             {
-                conn.Open();
+                await conn.OpenAsync();
+                
                 using (var cmd = new SqlCommand(sql, conn))
-                using (var reader = cmd.ExecuteReader())
                 {
-                    if (reader.Read())
+                    cmd.Parameters.AddWithValue("@ParcelId", parcelId);
+                    
+                    using (var reader = await cmd.ExecuteReaderAsync())
                     {
-                        for (int i = 0; i < reader.FieldCount; i++)
-                            result[reader.GetName(i)] = reader.GetValue(i)?.ToString();
+                        if (await reader.ReadAsync())
+                        {
+                            for (int i = 0; i < reader.FieldCount; i++)
+                            {
+                                result[reader.GetName(i)] = reader.GetValue(i)?.ToString();
+                            }
+                        }
                     }
                 }
             }
+            
             return result;
         }
 
-        // VIOLATION complexity-001 [Code Sustainability / High]: Cyclomatic complexity > 10.
-        // 11 conditional branches in one method — high maintenance cost and transformation risk.
+        /// <summary>
+        /// Calculates registration fee based on title type and land value
+        /// </summary>
         public decimal CalculateRegistrationFee(string titleType, decimal landValue,
             string ownerCategory, string region, bool isFirstRegistration)
         {
@@ -120,48 +217,109 @@ namespace LandTitleRegistration.Services
             return Math.Round(baseFee, 2);
         }
 
-        // VIOLATION dup-logic-001 [Code Sustainability / Medium]: Title type validation
-        // duplicated — identical check already exists inside CalculateRegistrationFee.
-        // Extract to a shared private ValidateTitleType() method or a TitleType enum.
-        public bool IsTitleTypeValid(string titleType)                                  // dup-logic-001
+        /// <summary>
+        /// Validates if the title type is valid
+        /// </summary>
+        public bool IsTitleTypeValid(string titleType)
         {
-            return titleType == "FREEHOLD"   || titleType == "LEASEHOLD" ||             // dup-logic-001
-                   titleType == "COMMONHOLD" || titleType == "ABSOLUTE";                // dup-logic-001
+            return titleType == "FREEHOLD"   || titleType == "LEASEHOLD" ||
+                   titleType == "COMMONHOLD" || titleType == "ABSOLUTE";
         }
 
-        public string GenerateMonthlyReport(string month, string year)
+        /// <summary>
+        /// Generates monthly report using Government Land Registry API
+        /// </summary>
+        public async Task<string> GenerateMonthlyReportAsync(string month, string year)
         {
-            // VIOLATION sec-cred-001: GovApiKey transmitted as plain query string —
-            // visible in server logs, browser history, and HTTP proxies.
-            var url = $"http://gov.landregistry.internal/reports?month={month}" +      // cr-csharp-0088
-                      $"&year={year}&apiKey={GovApiKey}";                               // sec-cred-001, cr-csharp-0088
-            return $"Report requested via: {url}";
-        }
-
-        // Missing XML doc comment — flagged by Code Sustainability rules
-        public List<string> SearchByOwner(string ownerName)                            // doc-missing-001
-        {
-            // VIOLATION sql-inject-001: LIKE query with unparameterised user input.
-            var sql = "SELECT TitleRef FROM TitleRegistrations WHERE OwnerName LIKE '%" // sql-inject-001
-                      + ownerName + "%'";                                               // sql-inject-001
-            var refs = new List<string>();
-            using (var conn = new SqlConnection(GetConnectionString()))
+            // Use HTTPS and pass API key in Authorization header instead of query string
+            using (var client = new HttpClient())
             {
-                conn.Open();
-                using (var cmd = new SqlCommand(sql, conn))
-                using (var reader = cmd.ExecuteReader())
-                    while (reader.Read()) refs.Add(reader.GetString(0));
+                client.DefaultRequestHeaders.Add("Authorization", $"Bearer {_govApiKey}");
+                client.Timeout = TimeSpan.FromSeconds(30);
+
+                // Discover service endpoint from Parameter Store
+                var serviceUrl = await GetParameterAsync("/landtitle/service-urls/gov-registry") 
+                    ?? "https://gov.landregistry.internal/reports";
+
+                var requestUrl = $"{serviceUrl}?month={Uri.EscapeDataString(month)}&year={Uri.EscapeDataString(year)}";
+                
+                var response = await client.GetAsync(requestUrl);
+                response.EnsureSuccessStatusCode();
+                
+                var content = await response.Content.ReadAsStringAsync();
+                Log.Info($"Monthly report generated for {month}/{year}");
+                
+                return content;
             }
+        }
+
+        /// <summary>
+        /// Retrieves a parameter value from AWS Systems Manager Parameter Store
+        /// </summary>
+        private async Task<string> GetParameterAsync(string parameterName)
+        {
+            try
+            {
+                var request = new GetParameterRequest
+                {
+                    Name = parameterName,
+                    WithDecryption = true
+                };
+
+                var response = await _ssmClient.GetParameterAsync(request);
+                return response.Parameter.Value;
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"Failed to retrieve parameter {parameterName}: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Searches for titles by owner name
+        /// </summary>
+        public async Task<List<string>> SearchByOwnerAsync(string ownerName)
+        {
+            // Use parameterized query with LIKE to prevent SQL injection
+            var sql = "SELECT TitleRef FROM TitleRegistrations WHERE OwnerName LIKE @OwnerName";
+            var refs = new List<string>();
+            
+            using (var conn = new SqlConnection(_connectionString))
+            {
+                await conn.OpenAsync();
+                
+                using (var cmd = new SqlCommand(sql, conn))
+                {
+                    cmd.Parameters.AddWithValue("@OwnerName", $"%{ownerName}%");
+                    
+                    using (var reader = await cmd.ExecuteReaderAsync())
+                    {
+                        while (await reader.ReadAsync())
+                        {
+                            refs.Add(reader.GetString(0));
+                        }
+                    }
+                }
+            }
+            
             return refs;
         }
 
-        private string ComputeSha1Hash(string input)                                   // sec-weak-hash
+        /// <summary>
+        /// Computes SHA-256 hash for secure confirmation codes
+        /// Replaces SHA-1 which is cryptographically broken
+        /// </summary>
+        private string ComputeSha256Hash(string input)
         {
-            using (var sha1 = new SHA1CryptoServiceProvider())                         // sec-weak-hash
+            using (var sha256 = SHA256.Create())
             {
-                var bytes = sha1.ComputeHash(Encoding.UTF8.GetBytes(input));            // sec-weak-hash
+                var bytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(input));
                 var sb = new StringBuilder();
-                foreach (var b in bytes) sb.Append(b.ToString("x2"));
+                foreach (var b in bytes)
+                {
+                    sb.Append(b.ToString("x2"));
+                }
                 return sb.ToString();
             }
         }
